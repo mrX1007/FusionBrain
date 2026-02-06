@@ -1,0 +1,35 @@
+image: python:3.11-slim
+
+variables:
+  UV_CACHE_DIR: ".uv-cache"
+
+cache:
+  paths:
+    - .uv-cache
+
+stages:
+  - lint
+  - test
+
+before_script:
+  - pip install uv
+  - uv venv
+  - source .venv/bin/activate
+  - uv sync
+
+quality_check:
+  stage: lint
+  script:
+    - echo "🚀 Running Ruff Linter..."
+    - ruff check .
+    - echo "✨ Checking Code Formatting..."
+    - ruff format --check .
+    - echo "🔒 Checking Dependency Lock..."
+    - uv lock --check
+
+static_analysis:
+  stage: lint
+  script:
+    - pip install radon
+    - echo "📊 Calculating Cyclomatic Complexity..."
+    - radon cc . -a -nc

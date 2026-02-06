@@ -1,0 +1,15 @@
+{
+  "weights": {
+    "WebExpert": 1.0,
+    "ReasoningExpert": 1.2,
+    "CodeExpert": 1.1773,
+    "QuantumExpert": 1.0,
+    "CriticExpert": 1.2705
+  },
+  "stats": {
+    "total_cycles": 25,
+    "successful_cycles": 11,
+    "lessons_learned": 9
+  },
+  "timestamp": 1770407813.7552938
+}
