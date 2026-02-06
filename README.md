@@ -33,7 +33,7 @@ We use [uv](https://github.com/astral-sh/uv) for lightning-fast dependency manag
 
 ```bash
 # Clone the repository
-git clone [https://github.com/YOUR_USERNAME/FusionBrain.git](https://github.com/YOUR_USERNAME/FusionBrain.git)
+git clone [https://github.com/mrX1007/FusionBrain.git](https://github.com/mrX1007/FusionBrain.git)
 cd FusionBrain
 
 # Install uv (if not already installed)
