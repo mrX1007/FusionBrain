@@ -1,0 +1,39 @@
+name: FusionBrain CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  quality-check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install uv
+      run: |
+        pip install uv
+
+    - name: Install dependencies
+      run: |
+        uv sync
+
+    - name: 🛡️ Run Ruff Linter
+      run: |
+        uv run ruff check .
+
+    - name: ✨ Check Formatting
+      run: |
+        uv run ruff format --check .
+
+    - name: 🔒 Check Lock File
+      run: |
+        uv lock --check
