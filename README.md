@@ -6,15 +6,13 @@
 ![AI](https://img.shields.io/badge/AI-Autonomous-orange)
 ![Interface](https://img.shields.io/badge/UI-Streamlit-red)
 
-**FusionBrain** is an experimental **Neuro-Symbolic Cognitive Architecture** (System 2 Thinking) that combines Large Language Models (LLMs), Quantum Probability Simulation, and Autonomous Agents.
+**FusionBrain** is an experimental **Neuro-Symbolic Cognitive Architecture** (System 2 Thinking) that combines Large Language Models (LLMs).
 
 Unlike standard chatbots, FusionBrain **thinks before it answers**, possesses **Quantum Intuition** (balancing Logic vs. Chaos), and can **proactively research** topics on the web.
 
 ## 🔥 Key Features v4.0
 
-* **⚛️ Quantum Intuition (Right Brain):** Uses **IBM Qiskit** to generate true entropy via quantum superposition. The agent dynamically switches between `LOGIC_MODE` (deterministic) and `CHAOS_MODE` (creative/high-risk) based on qubit measurement.
 * **🕵️‍♂️ Autonomous Research Agent:** A proactive agent that scans the web (DuckDuckGo + Wikipedia), filters content using LLM-based scoring, memorizes facts (RAG), and creates **GitHub Issues** for high-value findings.
-* **🖥️ Neural Dashboard:** A full-fledged Web UI (Streamlit) to monitor internal thought processes, memory state, and quantum entropy levels in real-time.
 * **🧠 RAG Memory:** Long-term memory system based on **ChromaDB** and semantic search.
 * **🛡️ Safety Simulation:** The World Model simulates the consequences of code execution before running it.
 

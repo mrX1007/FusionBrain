@@ -1,151 +1,170 @@
+import logging
+import time
 import uuid
+from typing import Any, Union
 
-from fusionbrain.core.aggregator import Aggregator
-from fusionbrain.core.goals import GoalManager
 from fusionbrain.core.knowledge import KnowledgeBase
 from fusionbrain.core.memory import Memory
-from fusionbrain.core.self_state import SelfState
-from fusionbrain.experts import (
-    CodeExpert,
-    CriticExpert,
-    QuantumExpert,
-    ReasoningExpert,
-    ResearchExpert,
-    WebExpert,
-    WorldModelExpert,
-)
+from fusionbrain.experts.code_expert import CodeExpert
+from fusionbrain.experts.critic_expert import CriticExpert
+from fusionbrain.experts.policy_sampler import PolicySampler
+from fusionbrain.experts.reasoning_expert import ReasoningExpert
+from fusionbrain.experts.research_expert import ResearchExpert
+from fusionbrain.experts.web_expert import WebExpert
+from fusionbrain.experts.world_model_expert import WorldModelExpert
 from fusionbrain.meta.meta_learning import MetaLearning
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+logger = logging.getLogger("FusionBrain")
 
 
 class FusionBrain:
+    CONTEXT_LIMIT = 4000
+    CRITIQUE_LIMIT = 2000
+
     def __init__(self):
         self.session_id = str(uuid.uuid4())
+
+        logger.info(f"🤖 Booting FusionBrain v7.1 - Session: {self.session_id}")
+
         self.memory = Memory()
-        self.state = SelfState()
         self.knowledge = KnowledgeBase()
-        self.goals = GoalManager()
+        self.meta_learner = MetaLearning(self.memory)
 
-        self.research_expert = ResearchExpert(self)
+        self.router = PolicySampler()
+        self.world = WorldModelExpert()
+        self.critic = CriticExpert()
 
-        self.experts = [
-            WebExpert(),
-            QuantumExpert(),
-            ReasoningExpert(),
-            WorldModelExpert(),
-            CodeExpert(),
-            CriticExpert(),
-        ]
+        self.web_expert = WebExpert()
+        self.code_expert = CodeExpert()
+        self.research_expert = ResearchExpert(brain_ref=self)
+        self.reasoning_expert = ReasoningExpert(brain_ref=self)
 
-        self.aggregator = Aggregator()
-        self.meta = MetaLearning()
-
-        print(f"[FusionBrain] Session started: {self.session_id}")
-        print("[FusionBrain] Pipeline Mode: ACTIVE (Quantum Intuition + Deep Reasoning)")
-
-    def think(self, prompt: str) -> str:
-        if prompt.strip().lower().startswith("/research"):
-            topic = prompt.replace("/research", "").strip()
-            if not topic:
-                topic = "Latest Artificial Intelligence Architectures Github"
-            return self.research_expert.run(topic)
-
-        cycle_id = str(uuid.uuid4())
-        self.memory.store_user(prompt)
-
-        trigger_phrases = [
-            "меня зовут",
-            "я люблю",
-            "мне нравится",
-            "мой",
-            "моя",
-            "мое",
-            "я работаю",
-        ]
-        if any(phrase in prompt.lower() for phrase in trigger_phrases):
-            self.knowledge.add(prompt, category="user_fact", tags=["auto_learned"])
-
-        base_context = {
-            "prompt": prompt,
-            "memory": self.memory.recent(),
-            "state": self.state.snapshot(),
-            "goals": self.goals.current(),
-            "knowledge": self.knowledge.retrieve(prompt),
+        self.experts_map: dict[str, Any] = {
+            "CodeExpert": self.code_expert,
+            "ResearchExpert": self.research_expert,
+            "ReasoningExpert": self.reasoning_expert,
         }
 
-        chain_of_thought = []
-        expert_outputs_log = []
+        self.default_expert = self.reasoning_expert
 
-        print(f"\n[Brain] Starting Pipeline for: '{prompt[:50]}...'")
+        print(f"[FusionBrain] Session started: {self.session_id}")
+        print("[FusionBrain] Pipeline Mode: Robust Agent")
 
-        for expert in self.experts:
-            try:
-                pipeline_context = base_context.copy()
-                if chain_of_thought:
-                    history_str = "\n\n".join(
-                        [f"--- ОТЧЕТ {name} ---\n{out}" for name, out in chain_of_thought]
-                    )
+    def think(self, user_prompt: str) -> str:
+        start_time = time.time()
 
-                    enhanced_prompt = (
-                        f"ЗАДАЧА ПОЛЬЗОВАТЕЛЯ: {prompt}\n\n"
-                        f"КОНТЕКСТ ПРЕДЫДУЩИХ ЭКСПЕРТОВ (Chain of Thought):\n{history_str}\n\n"
-                        f"ТВОЯ ЗАДАЧА ({expert.name}): Используй контекст выше. Выполни свою часть работы."
-                    )
+        self.memory.store_user(user_prompt)
 
-                    if expert.name == "QuantumExpert":
-                        enhanced_prompt += "\n\nРЕЖИМ: ГЕНЕРАЦИЯ ИДЕЙ. Используй суперпозицию для поиска нестандартных решений. Не ограничивай себя безопасностью на этом этапе."
+        plan = self.router.classify_intent(user_prompt)
 
-                    pipeline_context["prompt"] = enhanced_prompt
-                else:
-                    pipeline_context["prompt"] = prompt
+        intent = plan.get("intent", "CHAT")
+        target_expert_name = plan.get("expert", "ReasoningExpert")
+        difficulty = plan.get("difficulty", 1)
 
-                print(f"  -> ⏳ {expert.name} is working...")
-                result = expert.run(pipeline_context)
+        print(f"🧭 Route: [{intent}] -> {target_expert_name} ({difficulty}/10)")
 
-                if not result:
-                    print(f"  -> ⏭️ {expert.name} skipped.")
-                    continue
+        retrieved = self.knowledge.retrieve(user_prompt, n_results=2)
+        retrieved_str = str(retrieved)
 
-                chain_of_thought.append((expert.name, result))
-                expert_outputs_log.append({"expert": expert.name, "output": result})
-                print(f"  -> ✅ {expert.name} completed.")
+        lessons_context = ""
+        if "[LESSON]" in retrieved_str:
+            lessons_context = (
+                "\nCRITICAL MEMORY:\n"
+                f"{retrieved_str[:self.CONTEXT_LIMIT]}\n"
+                "Avoid repeating this."
+            )
 
-            except Exception as e:
-                print(f"[Brain] ❌ Pipeline Break at {expert.name}: {e}")
-                expert_outputs_log.append({"expert": expert.name, "output": f"Error: {e}"})
+        prompt_for_expert = (user_prompt + lessons_context)[-self.CONTEXT_LIMIT :]
 
-        merged = self.aggregator.merge(
-            prompt=prompt, expert_outputs=expert_outputs_log, state=self.state
-        )
+        context: dict[str, Any] = {
+            "prompt": prompt_for_expert,
+            "memory": self.memory.recent(3),
+            "knowledge": retrieved_str[: self.CONTEXT_LIMIT],
+            "prev_output": "",
+        }
 
-        critique = self.meta.evaluate(prompt, merged, expert_outputs_log)
-        self.meta.learn(prompt, merged, critique, self.knowledge)
-        final = self.aggregator.refine(merged, critique)
+        final_response = ""
 
-        self.memory.store_assistant(final)
-        self.state.update({"last_cycle": cycle_id})
+        max_retries = 2 if difficulty > 4 else 1
+        expert = self.experts_map.get(target_expert_name, self.default_expert)
 
-        return final
+        for attempt in range(max_retries):
+            if attempt > 0:
+                critique = context.get("critique", "")
+                critique = critique[: self.CRITIQUE_LIMIT]
+
+                context["prompt"] = (
+                    f"ORIGINAL TASK:\n{user_prompt}\n\n"
+                    f"CRITIC FEEDBACK:\n{critique}\n\n"
+                    "Fix errors."
+                )
+
+            result = expert.run(context)
+
+            if intent in {"CODING", "REASONING"} and difficulty >= 4:
+                context["prev_output"] = result
+                critique = self.critic.run(context)
+
+                passed = "[VERDICT]: PASS" in critique or "✅" in critique
+
+                if passed:
+                    final_response = result
+                    break
+
+                context["critique"] = critique
+                final_response = result if attempt == max_retries - 1 else ""
+
+            else:
+                final_response = result
+                break
+
+        self.meta_learner.track(target_expert_name, final_response)
+        stats = self.meta_learner.evaluate_episode(user_prompt, final_response)
+
+        if stats.get("lesson"):
+            self.knowledge.add(
+                f"[LESSON] {stats['lesson']}",
+                category="meta",
+                tags=["auto"],
+            )
+
+        self.memory.store_assistant(final_response)
+        self.memory.save_episode(user_prompt, final_response, success=stats["reward"] > 0)
+
+        elapsed = time.time() - start_time
+        print(f"✅ Done in {elapsed:.2f}s | Reward {stats['reward']:.2f}")
+
+        return final_response
 
     def repl(self):
-        print("\n=== FusionBrain AGI (Sequential Pipeline Core) ===")
-        print("Modes available:")
-        print("1. Standard Chat (Type anything)")
-        print("2. Autonomous Research (Type '/research <topic>')")
-        print("Type 'exit' to quit\n")
+        print("\n=== FusionBrain ===\n")
 
         while True:
             try:
-                user = input(">> ")
-                if user.lower() in ["exit", "quit"]:
+                user = input("👤 ")
+
+                if user.lower() in {"exit", "quit"}:
                     break
+
                 if not user.strip():
                     continue
-                answer = self.think(user)
-                print("\n" + "=" * 60 + "\n" + answer + "\n" + "=" * 60 + "\n")
+
+                print("\n🤖")
+                response = self.think(user)
+                print(response)
+
             except KeyboardInterrupt:
                 break
+
             except Exception as e:
-                print(f"\nError: {e}")
+                logger.error("Crash", exc_info=True)
+                print(e)
 
 
 if __name__ == "__main__":

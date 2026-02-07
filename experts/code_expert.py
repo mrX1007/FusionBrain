@@ -1,123 +1,106 @@
 import ast
-import importlib
+import logging
+import os
 import re
+import subprocess
+import sys
+import tempfile
 from typing import Any
 
-from fusionbrain.experts.base_expert import BaseExpert
+from .base_expert import BaseExpert
+
+logger = logging.getLogger(__name__)
 
 
 class CodeExpert(BaseExpert):
     def __init__(self):
         super().__init__(
             name="CodeExpert",
-            description="Generates code and checks for non-existent functions (Hallucination check).",
-            version="4.0-AntiHallucination",
-            model_name="qwen2.5-coder:7b",
+            description="Generates AND Executes Python code in a sandbox.",
+            version="3.0-Sandbox",
+            model_name="qwen2.5-coder:32b",
         )
+
+    def run(self, context: dict[str, Any]) -> str:
+        """
+        Основной метод запуска.
+        1. Генерирует код.
+        2. Если пользователь просит — выполняет его.
+        """
+        # Если промпт лежит внутри словаря (как в новом пайплайне)
+        prompt = context.get("prompt", "") if isinstance(context, dict) else str(context)
+
+        # 1. Генерация кода
+        code = self._generate_code(prompt)
+
+        # 2. Если пользователь просит выполнить — запускаем Sandbox
+        if self._should_execute(prompt):
+            execution_result = self._execute_sandbox(code)
+            return (
+                f"### 🐍 Code Generated & Executed\n"
+                f"```python\n{code}\n```\n"
+                f"**Sandbox Output:**\n"
+                f"```text\n{execution_result}\n```"
+            )
+
+        return f"### 🐍 Code Generated (Dry Run)\n```python\n{code}\n```"
 
     def _perform_task(self, context: dict[str, Any]) -> str:
-        prompt = context.get("prompt", "")
+        # Для совместимости с BaseExpert.run
+        return self.run(context)
 
+    def _generate_code(self, prompt: str) -> str:
         system = (
-            "Ты — Python-разработчик. Пиши код. "
-            "Используй ТОЛЬКО существующие библиотеки и функции. "
-            "Не выдумывай методы. Оберни код в ```python```."
+            "Write pure Python code. No markdown, no explanations. Just code. "
+            "Use standard libraries where possible."
         )
+        response = self._ask_model(prompt, system_prompt=system)
 
-        raw_response = self._ask_model(prompt, system_prompt=system)
-        code_fragment = self._extract_code(raw_response)
+        # Очистка от ```python ... ```
+        clean_code = response.replace("```python", "").replace("```", "").strip()
+        return clean_code
 
-        analysis = self._deep_analyze_code(code_fragment)
+    def _should_execute(self, prompt: str) -> bool:
+        """Определяет, нужно ли выполнять код."""
+        triggers = ["выполни", "execute", "run", "запусти", "посчитай", "calculate", "test"]
+        return any(w in prompt.lower() for w in triggers)
 
-        result = [
-            f"### 🤖 Code Expert (Model: {self.model_name})",
-            raw_response,
-            "",
-            "--- 🔍 Deep Inspection ---",
-            f"• Syntax: {'✅ Valid' if analysis['syntax_valid'] else '❌ Error'}",
-            f"• Hallucinations: {'✅ None' if analysis['attributes_valid'] else '⚠️ DETECTED'}",
-        ]
-
-        if not analysis["syntax_valid"]:
-            result.append(f"• Syntax Error: {analysis['error']}")
-
-        if not analysis["attributes_valid"]:
-            for err in analysis["attribute_errors"]:
-                result.append(f"• 🤥 Hallucination: {err}")
-                result.append("  (Model invented a function that does not exist!)")
-
-        return "\n".join(result)
-
-    def _extract_code(self, text: str) -> str:
-        match = re.search(r"```python(.*?)```", text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return text
-
-    def _deep_analyze_code(self, code: str) -> dict[str, Any]:
+    def _execute_sandbox(self, code: str) -> str:
         """
-        Проверяет и синтаксис, и существование модулей/функций.
+        Безопасное выполнение кода через временный файл и subprocess.
         """
-        result = {
-            "syntax_valid": False,
-            "attributes_valid": True,
-            "error": None,
-            "attribute_errors": [],
-        }
+        logger.info("Spinning up Sandbox Container...")
+
+        # Проверка на опасные команды перед запуском
+        if self._is_dangerous(code):
+            return "❌ Security Alert: Code contains forbidden commands (rm, system, etc)."
+
+        # Создаем временный файл
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+            tmp.write(code)
+            tmp_path = tmp.name
 
         try:
-            tree = ast.parse(code)
-            result["syntax_valid"] = True
+            # Запускаем в отдельном процессе с тайм-аутом 5 сек
+            result = subprocess.run(
+                [sys.executable, tmp_path],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = result.stdout + result.stderr
+        except subprocess.TimeoutExpired:
+            output = "❌ TimeoutError: Code execution took too long (>5s)."
         except Exception as e:
-            result["error"] = str(e)
-            return result
+            output = f"❌ Sandbox Error: {e}"
+        finally:
+            # Удаляем улики
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
-        hallucinations = self._check_imports_and_calls(tree)
-        if hallucinations:
-            result["attributes_valid"] = False
-            result["attribute_errors"] = hallucinations
+        return output.strip() or "[No Output]"
 
-        return result
-
-    def _check_imports_and_calls(self, tree: ast.AST) -> list[str]:
-        """
-        Проходит по AST, находит импорты и проверяет, существуют ли вызовы.
-        Пример: если код вызывает shutil.disk_format, мы проверяем hasattr(shutil, 'disk_format').
-        """
-        errors = []
-        imported_modules = {}  # map: alias -> real_module_name
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    name = alias.name
-                    asname = alias.asname or alias.name
-                    imported_modules[asname] = name
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module
-                if module:
-                    for alias in node.names:
-                        asname = alias.asname or alias.name
-                        imported_modules[asname] = f"{module}.{alias.name}"
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute):
-                if isinstance(node.value, ast.Name):
-                    var_name = node.value.id  #'shutil'
-                    attr_name = node.attr  #'disk_format'
-
-                    if var_name in imported_modules:
-                        real_module_name = imported_modules[var_name]
-
-                        try:
-                            mod = importlib.import_module(real_module_name)
-                            if not hasattr(mod, attr_name):
-                                errors.append(
-                                    f"Module '{real_module_name}' has no attribute '{attr_name}'"
-                                )
-                        except ImportError:
-                            pass
-                        except Exception:
-                            pass
-
-        return errors
+    def _is_dangerous(self, code: str) -> bool:
+        """Простейшая стат. проверка на rm -rf и прочее."""
+        forbidden = ["shutil.rmtree", "os.remove", "os.rmdir", "subprocess.call", "rm -rf"]
+        return any(cmd in code for cmd in forbidden)

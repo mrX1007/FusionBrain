@@ -1,189 +1,98 @@
-import json
 import logging
-import os
 import time
 from typing import Any
-
-from fusionbrain.experts.base_expert import BaseExpert
 
 logger = logging.getLogger(__name__)
 
 
-class MetaLearning(BaseExpert):
+class MetaLearning:
     """
-    Модуль мета-обучения (Reflexion + Reputation).
+    Advanced Meta-Learning System (RL-based).
+    Tracks trajectories, calculates rewards, and learns from mistakes.
     """
 
-    def __init__(self, storage_path="meta_weights.json"):
-        super().__init__(
-            name="MetaLearning",
-            description="Analyzes feedback and adjusts system behavior.",
-            version="3.0-Hybrid",
-            model_name="llama3.1",
+    def __init__(self, memory_ref: Any):
+        self.memory = memory_ref
+        self.reward_buffer: list[float] = []
+        self.trajectory: list[dict[str, Any]] = []
+        self.stats: dict[str, float] = {"lessons_learned": 0.0, "total_reward": 0.0}
+
+    # -----------------------------------------------------
+
+    def track(self, expert_name: str, output: str) -> None:
+        self.trajectory.append(
+            {
+                "expert": expert_name,
+                "output": str(output)[:1000],
+                "ts": time.time(),
+            }
         )
 
-        self.storage_path = storage_path
-        self.learning_rate = 0.05
-        self.min_weight = 0.1
-        self.max_weight = 2.0
-        self.weights = {
-            "WebExpert": 1.0,
-            "ReasoningExpert": 1.2,
-            "CodeExpert": 1.0,
-            "QuantumExpert": 1.0,
-            "CriticExpert": 1.3,
-        }
+    # -----------------------------------------------------
 
-        self.stats = {"total_cycles": 0, "successful_cycles": 0, "lessons_learned": 0}
+    def evaluate_episode(self, user_prompt: str, final_response: str) -> dict[str, Any]:
+        reward = 0.0
 
-        self.load()
+        if final_response and len(final_response) > 20:
+            reward += 0.2
 
-    def _perform_task(self, context: dict[str, Any]) -> str:
-        """
-        Мета-модуль обычно работает в фоне, но если его вызвать напрямую,
-        он вернет текущую статистику обучения.
-        """
-        return (
-            f"Meta Status: Active\n"
-            f"Cycles: {self.stats['total_cycles']}\n"
-            f"Lessons Learned: {self.stats['lessons_learned']}\n"
-            f"Current Weights: {json.dumps(self.weights, indent=2)}"
-        )
+        if "Sandbox Output" in final_response:
+            if "Error" not in final_response and "Traceback" not in final_response:
+                reward += 0.8
+            else:
+                reward -= 0.5
 
-    def get_weights(self) -> dict[str, float]:
-        return self.weights
+        if "Verifier Report" in final_response:
+            if "No critical errors" in final_response or "Looks good" in final_response:
+                reward += 0.3
+            elif "Hallucination" in final_response or "Logic error" in final_response:
+                reward -= 0.5
 
-    def evaluate(
-        self, prompt: str, merged_response: str, expert_outputs: list[dict]
-    ) -> dict[str, Any]:
-        """Оценивает качество цикла."""
-        merged_words = set(merged_response.lower().split())
-        best_expert = None
-        max_overlap = 0
+        self.reward_buffer.append(reward)
+        self.stats["total_reward"] += reward
 
-        for item in expert_outputs:
-            if item["expert"] == "MetaLearning":
-                continue
+        lesson: str | None = None
 
-            content = str(item["output"]).lower()
-            content_words = set(content.split())
-            if not content_words:
-                continue
+        if reward < 0.0:
+            lesson = self._formulate_lesson(user_prompt, final_response)
+            self._store_lesson(lesson)
+            self.stats["lessons_learned"] += 1.0
+            logger.warning("Low reward %.2f → lesson learned", reward)
+        else:
+            logger.info("High reward %.2f", reward)
 
-            intersection = merged_words.intersection(content_words)
-            overlap = len(intersection) / len(content_words)
-
-            if overlap > max_overlap:
-                max_overlap = overlap
-                best_expert = item["expert"]
-
-        confidence = 0.5 + (max_overlap * 0.4)
-
-        critic_output = ""
-        for item in expert_outputs:
-            if item["expert"] == "CriticExpert":
-                critic_output = item["output"]
-                break
-
-        bad_signals = [
-            "ошибка",
-            "error",
-            "risk",
-            "риск",
-            "неверно",
-            "incorrect",
-            "vulnerability",
-            "security warning",
-        ]
-        is_bad = (
-            any(signal in critic_output.lower() for signal in bad_signals)
-            if critic_output
-            else False
-        )
-
-        if is_bad:
-            confidence = 0.3
+        self.trajectory.clear()
 
         return {
-            "confidence": min(0.99, confidence),
-            "best_expert": best_expert,
-            "score": confidence,
-            "needs_improvement": is_bad,
-            "critic_feedback": critic_output,
+            "reward": reward,
+            "lesson": lesson,
+            "stats": self.stats,
         }
 
-    def learn(
-        self, prompt: str, final_response: str, critique: dict[str, Any], knowledge_base=None
-    ):
-        """Главный метод обучения (Веса + Уроки)."""
-        self.stats["total_cycles"] += 1
+    # -----------------------------------------------------
 
-        quality_score = critique.get("score", 0.5)
-        best_expert = critique.get("best_expert")
+    def _formulate_lesson(self, prompt: str, response: str) -> str:
+        if "Sandbox Error" in response or "SyntaxError" in response:
+            return f"Always validate Python syntax and imports. Context: {prompt[:40]}"
 
-        if quality_score > 0.7:
-            self.stats["successful_cycles"] += 1
-            if best_expert and best_expert in self.weights:
-                self._adjust_weight(best_expert, 1, quality_score)
+        if "No information found" in response or "Nothing relevant" in response:
+            return f"Use broader search queries. Context: {prompt[:40]}"
 
-        elif quality_score < 0.4:
-            if best_expert and best_expert in self.weights:
-                self._adjust_weight(best_expert, -1, quality_score)
+        if "Hallucination" in response:
+            return f"Do not invent APIs. Verify libraries. Context: {prompt[:40]}"
 
-        if critique.get("needs_improvement") and knowledge_base:
-            self._reflexion_loop(
-                prompt, final_response, critique.get("critic_feedback", ""), knowledge_base
+        if "Forbidden" in response or "Security Alert" in response:
+            return "Never use dangerous system commands."
+
+        return "Double-check reasoning logic before final answer."
+
+    # -----------------------------------------------------
+
+    def _store_lesson(self, lesson: str) -> None:
+        if hasattr(self.memory, "store"):
+            self.memory.store(
+                role="system",
+                text=f"[SELF-IMPROVE] {lesson}",
+                topic="lesson",
+                importance=3.0,
             )
-
-        if self.stats["total_cycles"] % 5 == 0:
-            self.save()
-
-    def _reflexion_loop(self, prompt: str, bad_response: str, feedback: str, knowledge_base):
-        print("\n[Meta] 🧠 Reflexion triggered! Analyzing failure...")
-
-        system_prompt = (
-            "Ты — аналитик ошибок ИИ. "
-            "Сформулируй ОДНО универсальное правило (Урок), которое поможет избежать этой ошибки в будущем. "
-            "Правило должно начинаться со слов 'НЕЛЬЗЯ' или 'ВСЕГДА'."
-        )
-
-        user_content = (
-            f"ЗАДАЧА: {prompt}\nОШИБКА: {bad_response}\nКРИТИКА: {feedback}\n\nСформулируй урок:"
-        )
-
-        lesson = self._ask_model(user_content, system_prompt=system_prompt)
-        lesson = lesson.strip().replace('"', "")
-
-        knowledge_base.add(
-            content=f"[LESSON] {lesson}",
-            category="mistake_pattern",
-            tags=["self_improvement", "reflexion_rule"],
-        )
-
-        self.stats["lessons_learned"] += 1
-        print(f"[Meta] 🎓 New Lesson Learned & Saved: '{lesson}'")
-
-    def _adjust_weight(self, expert_name: str, direction: int, quality: float):
-        current = self.weights.get(expert_name, 1.0)
-        delta = direction * self.learning_rate * abs(quality - 0.5) * 2
-        new_weight = max(self.min_weight, min(self.max_weight, current + delta))
-        self.weights[expert_name] = round(new_weight, 4)
-
-    def save(self):
-        data = {"weights": self.weights, "stats": self.stats, "timestamp": time.time()}
-        try:
-            with open(self.storage_path, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.error(f"Meta save failed: {e}")
-
-    def load(self):
-        if not os.path.exists(self.storage_path):
-            return
-        try:
-            with open(self.storage_path) as f:
-                data = json.load(f)
-                self.weights = data.get("weights", self.weights)
-                self.stats = data.get("stats", self.stats)
-        except Exception as e:
-            logger.error(f"Meta load failed: {e}")

@@ -22,9 +22,9 @@ class WebExpert(BaseExpert):
     def __init__(self):
         super().__init__(
             name="WebExpert",
-            description="Searches the internet for real-time info (No API key required).",
-            version="2.0-TextConfig",
-            model_name="llama3.1",
+            description="...",
+            version="1.0",
+            model_name="llama3.1:8b",  # <--- CHANGED
         )
 
     def _perform_task(self, context: dict[str, Any]) -> str:

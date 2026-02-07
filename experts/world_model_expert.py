@@ -1,74 +1,61 @@
+import json
 import logging
-from typing import Any
 
-from fusionbrain.experts.base_expert import BaseExpert
-from fusionbrain.experts.quantum_expert import QuantumExpert
+from .base_expert import BaseExpert
 
 logger = logging.getLogger(__name__)
 
 
 class WorldModelExpert(BaseExpert):
-    """
-    WORLD MODEL (SYSTEM 2+).
-
-    Роль: Симулятор Будущего.
-    Задача: Взять стратегию ReasoningExpert и проверить её на прочность
-    в вероятностной квантовой среде (Qiskit Entanglement).
-    """
-
     def __init__(self):
         super().__init__(
-            name="WorldModelExpert",
-            description="Simulates execution scenarios using Quantum Probabilities.",
-            version="1.0-Simulation",
-            model_name="llama3.1",
+            name="WorldModel",
+            description="Maintains the global state.",
+            version="2.0-Stateful",
+            model_name="qwen2.5-coder:32b",  # <--- CHANGED
         )
-        self.quantum_simulator = QuantumExpert()
+        self.state = {
+            "user_intent": None,
+            "constraints": [],
+            "risk_level": "unknown",
+            "current_step": 0,
+        }
 
-    def _perform_task(self, context: dict[str, Any]) -> str:
-        full_context = context.get("prompt", "")
-        if len(full_context) < 50:
-            return ""
+    def run(self, context: dict) -> str:
+        prompt = context.get("prompt", "")
+        self._update_state(prompt)
 
-        strategy_action = self._extract_strategy(full_context)
+        simulated_outcome = self._simulate_outcome(prompt)
 
-        agents = ["Environment (Market/System)", "Resistance (Competitor/Bugs)", "Agent Action"]
-        sim_result = self.quantum_simulator.simulate_world_scenario(agents, strategy_action)
-        advisory = ""
-        if "NEGATIVE" in sim_result:
-            advisory = "⛔️ CRITICAL WARNING: High failure probability detected. CodeExpert should add extra error handling or fallback mechanisms."
-        elif "POSITIVE" in sim_result:
-            advisory = "✅ GREEN LIGHT: Strategy appears robust. Proceed with implementation."
+        return (
+            f"### 🌍 World State Snapshot\n"
+            f"- Intent: {self.state['user_intent']}\n"
+            f"- Risk: {self.state['risk_level']}\n"
+            f"- Simulation: {simulated_outcome}"
+        )
+
+    def _update_state(self, prompt: str):
+        """Парсит промпт и обновляет переменные состояния."""
+        if "код" in prompt or "python" in prompt:
+            self.state["user_intent"] = "coding"
+        elif "research" in prompt or "найди" in prompt:
+            self.state["user_intent"] = "research"
         else:
-            advisory = "⚠️ CAUTION: Outcome is chaotic. Implement carefully."
+            self.state["user_intent"] = "general_chat"
 
-        output = [
-            "### 🔮 World Model Simulation (Pre-Mortem Analysis)",
-            "",
-            f"**Simulated Scenario:** '{strategy_action}'",
-            "",
-            f"{sim_result}",
-            "",
-            f"**System Advisory:** {advisory}",
-        ]
+        if "удалить" in prompt or "hack" in prompt:
+            self.state["risk_level"] = "HIGH"
+        else:
+            self.state["risk_level"] = "LOW"
 
-        return "\n".join(output)
-
-    def _extract_strategy(self, text: str) -> str:
+    def _simulate_outcome(self, action: str) -> str:
         """
-        Использует LLM, чтобы вычленить из длинного текста ReasoningExpert
-        одно главное действие для симуляции.
+        Предсказывает результат действий (Look-ahead).
         """
-        recent_context = text[-2000:]
+        if self.state["risk_level"] == "HIGH":
+            return "⛔ BLOCK: Action leads to system instability or violation."
 
-        system = (
-            "Ты — аналитик систем. Твоя задача — прочитать мысли предыдущего эксперта "
-            "и выделить ГЛАВНОЕ ПРЕДЛАГАЕМОЕ ДЕЙСТВИЕ в 2-5 словах на английском.\n"
-            "Примеры: 'Aggressive Refactoring', 'High Risk Investment', 'Conservative Patch', 'System Reboot'.\n"
-            "Если действие рискованное, обязательно добавь слово 'Risk'."
-        )
+        if self.state["user_intent"] == "coding":
+            return "✅ SUCCESS: Code execution probable. Syntax check required."
 
-        action = self._ask_model(
-            f"Context:\n{recent_context}\n\nExtract Main Action:", system_prompt=system
-        )
-        return action.strip().replace('"', "").replace("'", "").split("\n")[0]
+        return "ℹ️ NEUTRAL: Standard interaction."

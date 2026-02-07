@@ -24,9 +24,9 @@ class ResearchExpert(BaseExpert):
     def __init__(self, brain_ref):
         super().__init__(
             name="ResearchExpert",
-            description="Hybrid Researcher: Scans Web (DDG) & Wikipedia. Filters garbage via LLM.",
+            description="Hybrid Researcher...",
             version="3.0-Hybrid",
-            model_name="qwen2.5-coder:7b",
+            model_name="llama3.1:8b",  # <--- CHANGED
         )
         self.brain = brain_ref
         self.github_token = os.getenv("GITHUB_TOKEN")

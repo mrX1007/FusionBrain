@@ -124,7 +124,7 @@ if prompt:
                     status.update(label="Research Complete", state="complete")
 
                 else:
-                    st.write("⚛️ Quantum Superposition check...")
+                    st.write("check...")
                     time.sleep(0.2)
                     st.write("🧠 Reasoning & Simulation...")
 

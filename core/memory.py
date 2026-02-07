@@ -151,8 +151,29 @@ class Memory:
     # ---------------- episodic ----------------
 
     def episode(self, seconds=300):
+        """Возвращает недавние записи за последние N секунд."""
         t = time.time()
         return [m for m in self.buffer if t - m["ts"] < seconds]
+
+    def save_episode(self, user_prompt: str, final_response: str, success: bool = True):
+        """
+        Сохраняет полный цикл взаимодействия (Task -> Solution) как единый эпизод.
+        Используется для Meta-Learning.
+        """
+        episode_data = {
+            "type": "interaction_episode",
+            "prompt": user_prompt,
+            "response": final_response,
+            "success": success,
+            "timestamp": time.time(),
+        }
+        # Сохраняем как JSON-строку, чтобы работал поиск по тексту
+        self.store(
+            role="system",
+            text=json.dumps(episode_data),
+            topic="episode",
+            importance=2.0,  # Высокая важность для обучения
+        )
 
     # ---------------- persistence ----------------
 

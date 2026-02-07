@@ -1,130 +1,200 @@
+import hashlib
 import logging
 import time
-import uuid
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+logger = logging.getLogger("KnowledgeBase")
 
 try:
     import chromadb
-    from chromadb.config import Settings
     from sentence_transformers import SentenceTransformer
 
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
-    logger.warning("⚠️ RAG libraries (chromadb, sentence-transformers) not found.")
-    logger.warning("   Please run: pip install chromadb sentence-transformers")
-    logger.warning("   Falling back to dummy memory mode.")
+    logger.warning("Install: uv add chromadb sentence-transformers")
 
 
 class KnowledgeBase:
     """
-    Продвинутая Векторная Память (RAG).
+    Production Vector Knowledge Store (RAG)
 
-    Использует:
-    1. SentenceTransformer: Превращает текст в векторы (числа).
-    2. ChromaDB: Хранит эти векторы и позволяет искать по смыслу.
+    Features:
+    - Semantic embeddings
+    - Persistent ChromaDB
+    - Deduplication
+    - Metadata
+    - Batch ingest
+    - Safe fallback
     """
 
-    def __init__(self, db_path="fusion_knowledge_db"):
+    def __init__(self, db_path: str = "./fusion_knowledge"):
         self.db_path = db_path
-        self.collection = None
         self.encoder = None
+        self.collection = None
+        self.client = None
 
         if RAG_AVAILABLE:
-            self._init_vector_db()
+            self._boot()
 
-    def _init_vector_db(self):
-        """Инициализация базы данных и нейросети для эмбеддингов."""
+    # -------------------------------------------------
+
+    def _boot(self) -> None:
         try:
-            logger.info("[Knowledge] Loading Embedding Model (all-MiniLM-L6-v2)...")
-
+            logger.info("[KB] Loading encoder...")
             self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
 
-            logger.info("[Knowledge] Connecting to ChromaDB...")
-
+            logger.info("[KB] Connecting Chroma...")
             self.client = chromadb.PersistentClient(path=self.db_path)
 
-            self.collection = self.client.get_or_create_collection(name="brain_memory")
+            self.collection = self.client.get_or_create_collection(
+                name="memory",
+                metadata={"hnsw:space": "cosine"},
+            )
 
-            count = self.collection.count()
-            logger.info(f"[Knowledge] System Ready. Memories stored: {count}")
+            logger.info("[KB] Ready | Stored: %s", self.collection.count())
 
         except Exception as e:
-            logger.error(f"[Knowledge] Critical Init Error: {e}")
+            logger.error("[KB] Boot failed: %s", e)
+            self.collection = None
+
+    # -------------------------------------------------
+
+    @staticmethod
+    def _hash(text: str) -> str:
+        return hashlib.sha256(text.strip().lower().encode()).hexdigest()
+
+    # -------------------------------------------------
 
     def add(
-        self, content: str, category: str = "general", tags: list[str] = None, source: str = "user"
+        self, content: str, category: str = "general", tags: list[str] | None = None
     ) -> str | None:
-        """
-        Сохраняет факт в векторную базу.
-        """
-        if not RAG_AVAILABLE or not self.collection:
+        if not self.collection or not self.encoder:
             return None
 
+        tags = tags or []
+
+        doc_hash = self._hash(content)
+        doc_id = f"{category}:{doc_hash}"
+
         try:
-            if tags is None:
-                tags = []
-            tags_str = ",".join(tags)
-
-            metadata = {
-                "category": category,
-                "tags": tags_str,
-                "source": source,
-                "timestamp": str(time.time()),
-            }
-
-            doc_id = str(uuid.uuid4())
+            exists = self.collection.get(ids=[doc_id])
+            if exists and exists["ids"]:
+                return doc_id
 
             embedding = self.encoder.encode(content).tolist()
 
+            meta = {
+                "category": category,
+                "tags": ",".join(tags),
+                "created": time.time(),
+            }
+
             self.collection.add(
-                documents=[content], embeddings=[embedding], metadatas=[metadata], ids=[doc_id]
+                ids=[doc_id],
+                documents=[content],
+                embeddings=[embedding],
+                metadatas=[meta],
             )
 
-            logger.info(f"[Knowledge] + Memorized: '{content[:40]}...'")
+            logger.info("[KB] + %s", content[:40])
+
             return doc_id
 
         except Exception as e:
-            logger.error(f"[Knowledge] Add Error: {e}")
+            logger.error("[KB] add(): %s", e)
             return None
 
-    def retrieve(self, query: str, n_results: int = 3) -> str:
-        """
-        Семантический поиск: находит информацию, подходящую по СМЫСЛУ к запросу.
-        Возвращает отформатированную строку для вставки в промпт LLM.
-        """
-        if not RAG_AVAILABLE or not self.collection:
-            return ""
+    # -------------------------------------------------
 
-        if self.collection.count() == 0:
+    def add_batch(self, texts: list[str], category: str = "general") -> None:
+        if not self.collection or not self.encoder:
+            return
+
+        ids: list[str] = []
+        embeddings: list[list[float]] = []
+        metadatas: list[dict] = []
+        documents: list[str] = []
+
+        for text in texts:
+            h = self._hash(text)
+            doc_id = f"{category}:{h}"
+
+            try:
+                exists = self.collection.get(ids=[doc_id])
+                if exists and exists["ids"]:
+                    continue
+
+                ids.append(doc_id)
+                embeddings.append(self.encoder.encode(text).tolist())
+                documents.append(text)
+                metadatas.append(
+                    {
+                        "category": category,
+                        "created": time.time(),
+                    }
+                )
+
+            except Exception:
+                continue
+
+        if not ids:
+            return
+
+        self.collection.add(
+            ids=ids,
+            documents=documents,
+            embeddings=embeddings,
+            metadatas=metadatas,
+        )
+
+    # -------------------------------------------------
+
+    def retrieve(self, query: str, top_k: int = 3) -> str:
+        if not self.collection or not self.encoder or self.collection.count() == 0:
             return ""
 
         try:
-            query_embedding = self.encoder.encode(query).tolist()
+            q_embed = self.encoder.encode(query).tolist()
 
-            results = self.collection.query(query_embeddings=[query_embedding], n_results=n_results)
+            res = self.collection.query(
+                query_embeddings=[q_embed],
+                n_results=top_k,
+            )
 
-            found_docs = results["documents"][0]
-            found_meta = results["metadatas"][0]
+            docs = res["documents"][0]
+            metas = res["metadatas"][0]
+            dists = res["distances"][0]
 
-            if not found_docs:
-                return ""
+            out: list[str] = []
 
-            context_parts = []
-            for i, doc in enumerate(found_docs):
-                meta = found_meta[i]
-                timestamp = meta.get("timestamp", "unknown")
+            for i, doc in enumerate(docs):
+                if dists[i] > 0.75:
+                    continue
 
-                context_parts.append(f"- [Fact]: {doc}")
+                cat = metas[i].get("category", "general").upper()
+                out.append(f"[{cat}] {doc}")
 
-            return "Relevant Long-Term Memory:\n" + "\n".join(context_parts)
+            return "\n".join(out)
 
         except Exception as e:
-            logger.error(f"[Knowledge] Retrieve Error: {e}")
+            logger.error("[KB] retrieve(): %s", e)
             return ""
 
-    def save(self):
-        pass
+    # -------------------------------------------------
+
+    def stats(self) -> dict:
+        if not self.collection:
+            return {}
+
+        return {
+            "count": self.collection.count(),
+            "path": self.db_path,
+        }
+
+    # -------------------------------------------------
+
+    def clear(self) -> None:
+        if self.client:
+            self.client.delete_collection("memory")
+            self._boot()
